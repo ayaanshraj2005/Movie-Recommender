@@ -3,6 +3,8 @@ import pickle
 import pandas as pd
 import ast
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
@@ -189,7 +191,8 @@ def fetch_posters(movie_id):
         response = requests.get(
             'https://api.tmdb.org/3/movie/{}?api_key={}'.format(movie_id, api_key),
             headers=headers,
-            timeout=5
+            timeout=5,
+            verify=False
         )
         if response.status_code == 200:
             data = response.json()
@@ -256,7 +259,8 @@ def fetch_person_details(id_):
         response = requests.get(
             'https://api.tmdb.org/3/person/{}?api_key={}'.format(id_, api_key),
             headers=headers,
-            timeout=5
+            timeout=5,
+            verify=False
         )
         if response.status_code == 200:
             data = response.json()

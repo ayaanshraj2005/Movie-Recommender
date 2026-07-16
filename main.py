@@ -66,48 +66,65 @@ def main():
             displayed.clear()
             st.session_state.selected_movie_name = selected_movie_name
             with st.spinner("Generating recommendations from different perspectives... 🔮"):
-                recommendation_tags(new_df, selected_movie_name, r'Files/vectorized_tags.npz', "are")
-                recommendation_tags(new_df, selected_movie_name, r'Files/vectorized_genres.npz', "on the basis of genres are")
-                recommendation_tags(new_df, selected_movie_name,
-                                    r'Files/vectorized_tprduction_comp.npz', "from the same production company are")
-                recommendation_tags(new_df, selected_movie_name, r'Files/vectorized_keywords.npz', "on the basis of keywords are")
-                recommendation_tags(new_df, selected_movie_name, r'Files/vectorized_tcast.npz', "on the basis of cast are")
-
-    def recommendation_tags(new_df, selected_movie_name, npz_file_path, str_text):
-
-        movies, movie_ids, scores = preprocess.recommend(new_df, selected_movie_name, npz_file_path)
-        st.write(f'#### Best Recommendations {str_text}...')
-
-        rec_movies = []
-        rec_posters = []
-        rec_scores = []
-        cnt = 0
-        # Adding only 5 uniques recommendations
-        for i, j in enumerate(movies):
-            if cnt == 5:
-                break
-            if j not in displayed:
-                rec_movies.append(j)
-                rec_posters.append(preprocess.fetch_posters(movie_ids[i]))
-                rec_scores.append(scores[i])
-                displayed.append(j)
-                cnt += 1
-
-        # Columns to display informations of movies i.e. movie title and movie poster
-        cols = st.columns(5)
-        for idx in range(min(5, len(rec_movies))):
-            with cols[idx]:
-                card_html = f"""
-                <div class="movie-card">
-                    <div class="movie-poster-container">
-                        <span class="match-badge">{rec_scores[idx]}% Match</span>
-                        <img class="movie-poster" src="{rec_posters[idx]}" alt="{rec_movies[idx]}" />
-                    </div>
-                    <div class="movie-card-title">{rec_movies[idx]}</div>
-                </div>
-                """
-                st.markdown(card_html, unsafe_allow_html=True)
-        st.write("")
+                # Define configurations for different recommendation perspectives
+                perspectives = [
+                    (r'Files/vectorized_tags.npz', "are"),
+                    (r'Files/vectorized_genres.npz', "on the basis of genres are"),
+                    (r'Files/vectorized_tprduction_comp.npz', "from the same production company are"),
+                    (r'Files/vectorized_keywords.npz', "on the basis of keywords are"),
+                    (r'Files/vectorized_tcast.npz', "on the basis of cast are")
+                ]
+                
+                computed_results = []
+                unique_ids_to_fetch = set()
+                
+                # Compute matches first (fast scipy operations)
+                for npz_file_path, str_text in perspectives:
+                    movies, movie_ids, scores = preprocess.recommend(new_df, selected_movie_name, npz_file_path)
+                    
+                    rec_movies = []
+                    rec_ids = []
+                    rec_scores = []
+                    cnt = 0
+                    for i, j in enumerate(movies):
+                        if cnt == 5:
+                            break
+                        if j not in displayed:
+                            rec_movies.append(j)
+                            rec_ids.append(movie_ids[i])
+                            rec_scores.append(scores[i])
+                            displayed.append(j)
+                            unique_ids_to_fetch.add(movie_ids[i])
+                            cnt += 1
+                    computed_results.append((str_text, rec_movies, rec_ids, rec_scores))
+                
+                # Fetch all unique posters in parallel
+                from concurrent.futures import ThreadPoolExecutor
+                unique_ids_list = list(unique_ids_to_fetch)
+                with ThreadPoolExecutor(max_workers=15) as executor:
+                    posters_list = list(executor.map(preprocess.fetch_posters, unique_ids_list))
+                
+                poster_map = dict(zip(unique_ids_list, posters_list))
+                
+                # Render results categories
+                for str_text, rec_movies, rec_ids, rec_scores in computed_results:
+                    st.write(f'#### Best Recommendations {str_text}...')
+                    cols = st.columns(5)
+                    for idx in range(min(5, len(rec_movies))):
+                        m_id = rec_ids[idx]
+                        poster_url = poster_map.get(m_id, "https://images.unsplash.com/photo-1440404653325-ab127d49abc1?q=80&w=500&auto=format&fit=crop")
+                        with cols[idx]:
+                            card_html = f"""
+                            <div class="movie-card">
+                                <div class="movie-poster-container">
+                                    <span class="match-badge">{rec_scores[idx]}% Match</span>
+                                    <img class="movie-poster" src="{poster_url}" alt="{rec_movies[idx]}" />
+                                </div>
+                                <div class="movie-card-title">{rec_movies[idx]}</div>
+                            </div>
+                            """
+                            st.markdown(card_html, unsafe_allow_html=True)
+                    st.write("")
 
     def display_movie_details():
 
@@ -196,18 +213,25 @@ def main():
         st.write("---")
         st.write("### Top Cast")
         cnt = 0
+        cast_names = []
+        cast_ids_to_fetch = []
+        for idx, i in enumerate(info[14]):
+            if cnt == 5:
+                break
+            cast_ids_to_fetch.append(i)
+            cast_names.append(info[11][idx] if idx < len(info[11]) else "Unknown Actor")
+            cnt += 1
+
         urls = []
         bio = []
-        cast_names = []
         with st.spinner("Loading cast details... 🎭"):
-            for idx, i in enumerate(info[14]):
-                if cnt == 5:
-                    break
-                url, biography = preprocess.fetch_person_details(i)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                cast_details = list(executor.map(preprocess.fetch_person_details, cast_ids_to_fetch))
+            
+            for url, biography in cast_details:
                 urls.append(url)
                 bio.append(biography)
-                cast_names.append(info[11][idx] if idx < len(info[11]) else "Unknown Actor")
-                cnt += 1
 
         cols = st.columns(5)
         for idx in range(min(5, len(urls))):
@@ -257,6 +281,18 @@ def main():
     def display_all_movies(start):
 
         i = start
+        movie_ids_to_fetch = []
+        for offset in range(10):
+            if start + offset < len(movies):
+                movie_ids_to_fetch.append(movies.iloc[start + offset]['movie_id'])
+
+        with st.spinner("Loading posters... 🎬"):
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                posters = list(executor.map(preprocess.fetch_posters, movie_ids_to_fetch))
+        
+        poster_map = dict(zip(movie_ids_to_fetch, posters))
+
         # Row 1
         with st.container():
             cols = st.columns(5)
@@ -265,8 +301,7 @@ def main():
                     break
                 row = movies.iloc[i]
                 id = row['movie_id']
-                with st.spinner("Loading..."):
-                    link = preprocess.fetch_posters(id)
+                link = poster_map.get(id, "https://images.unsplash.com/photo-1440404653325-ab127d49abc1?q=80&w=500&auto=format&fit=crop")
                 with cols[idx]:
                     card_html = f"""
                     <div class="movie-card">
@@ -288,8 +323,7 @@ def main():
                     break
                 row = movies.iloc[i]
                 id = row['movie_id']
-                with st.spinner("Loading..."):
-                    link = preprocess.fetch_posters(id)
+                link = poster_map.get(id, "https://images.unsplash.com/photo-1440404653325-ab127d49abc1?q=80&w=500&auto=format&fit=crop")
                 with cols[idx]:
                     card_html = f"""
                     <div class="movie-card">
